@@ -4,17 +4,16 @@ import schemeCodes from '@/data/scheme-codes'
 import { stateOptions } from '@/data/states'
 import { Trades } from '@/data/trade-agrements'
 import { cargoOptions, contractTypes, paymentTypes, priceInclusionTypes, sealTypes, weightUnits } from '@/data/types'
-import { BranchDialog, PartyDialog } from './party-dialogs'
 import { routes } from '@/shared/route-paths'
 import { s, useFieldArray, useForm } from 'core/form'
-import { Form, SubmitButton } from 'core/form/components'
+import { Form } from 'core/form/components'
 import { navigate, useParams } from 'core/routing'
 import { toast } from 'core/toast-manager'
 import { RrCaretDown } from 'icons/rr/fi-rr-caret-down'
 import { useEffect, useRef, useState } from 'react'
-import { getFormContext, RegisterOptions, useController } from 'ui/form'
 import { Button } from 'ui/basic/button'
 import { Card, CardContent, CardHeader } from 'ui/basic/card'
+import { getFormContext, RegisterOptions, useController } from 'ui/form'
 import { Checkbox } from 'ui/inputs/checkbox'
 import { InputError } from 'ui/inputs/error'
 import { Input } from 'ui/inputs/input'
@@ -24,7 +23,6 @@ import { PopoverContext } from 'ui/interactive/popover-context'
 import { Tabs, TabsList, TabsTrigger } from 'ui/interactive/tabs'
 import { clsx, getContext } from 'ui/utils'
 import { getDemoData, saveBill, useDemoData } from './demo-store'
-import { shippingBillService } from './shipping-bill-service'
 import { getMarksAndNumbersOptions, MarksAndNumbersOption } from './marks-and-numbers-source'
 import {
   BillInvoiceForm,
@@ -42,7 +40,9 @@ import {
   SavedBill,
   ShippingBillFormValues
 } from './model'
+import { BranchDialog, PartyDialog } from './party-dialogs'
 import { partyMockService } from './party-mock-service'
+import { shippingBillService } from './shipping-bill-service'
 import { workflowSteps } from './workflow'
 
 const positive = s.string().refine((value) => (Number(value) > 0 ? undefined : 'Enter a number above zero'))
@@ -76,7 +76,10 @@ const billSchema = s.object({
   invoiceNumber: s.string(),
   invoiceDate: s.string(),
   currency: s.string(),
-  invoiceTotal: s.string().refine((value) => (!value || Number(value) >= 0 ? undefined : 'Total cannot be negative')).optional(),
+  invoiceTotal: s
+    .string()
+    .refine((value) => (!value || Number(value) >= 0 ? undefined : 'Total cannot be negative'))
+    .optional(),
   contractType: s.string(),
   buyerId: s.string().optional(),
   buyerBranchId: s.string().optional(),
@@ -209,6 +212,7 @@ function AsyncPartySelect({
   const [query, setQuery] = useState('')
   const [options, setOptions] = useState<AsyncOption[]>([])
   const [loading, setLoading] = useState(false)
+  const [searchError, setSearchError] = useState(false)
   const [selectedLabel, setSelectedLabel] = useState('')
   const [isOpen, setIsOpen] = useState(false)
 
@@ -238,26 +242,31 @@ function AsyncPartySelect({
     }
   }, [value, ...deps])
 
-  // Fetch search results asynchronously whenever query changes or popover opens
+  // Fetch search results asynchronously whenever query changes or popover opens.
+  // Ignore stale requests after the query changes or the component unmounts.
   useEffect(() => {
     if (!isOpen && !query) return
 
     let active = true
     setLoading(true)
+    setSearchError(false)
+
     const timer = setTimeout(() => {
       void fetchOptionsRef
         .current(query)
         .then((results) => {
-          if (active) {
-            setOptions(results)
-            setLoading(false)
-          }
+          if (!active) return
+
+          setOptions(results)
+          setLoading(false)
+          setSearchError(false)
         })
         .catch(() => {
-          if (active) {
-            setOptions([])
-            setLoading(false)
-          }
+          if (!active) return
+
+          setOptions([])
+          setLoading(false)
+          setSearchError(true)
         })
     }, 200)
 
@@ -270,15 +279,11 @@ function AsyncPartySelect({
   return (
     <div>
       <input type="hidden" name={name} value={value ?? ''} ref={ref} disabled={disabled} />
-      <Popover
-        placement="bottom-start"
-        fallbackPlacements={['top-start']}
-        onOpenCallback={(open) => setIsOpen(open)}>
+      <Popover placement="bottom-start" fallbackPlacements={['top-start']} onOpenCallback={(open) => setIsOpen(open)}>
         <PopoverTrigger
           className={clsx(
             'outline-focus-select group flex w-full cursor-pointer items-center justify-between rounded border border-gray-200 pr-2 hover:border-gray-300 disabled:cursor-not-allowed disabled:opacity-50',
-            className || 'bg-white',
-            disabled && 'cursor-not-allowed opacity-50'
+            `${className ?? 'bg-white'} ${disabled ? 'cursor-not-allowed opacity-50' : ''}`
           )}
           disabled={disabled}>
           <div className="flex items-center p-2 text-sm">
@@ -288,7 +293,7 @@ function AsyncPartySelect({
           </div>
           <RrCaretDown className="size-4 text-gray-400 transition-transform group-data-[state=open]:rotate-180" />
         </PopoverTrigger>
-        <InputError name={name} />
+        <InputError name={name as never} />
         <PopoverContent className="overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg">
           <div className="border-b border-gray-100 p-2">
             <input
@@ -302,7 +307,13 @@ function AsyncPartySelect({
           </div>
           <div className="max-h-56 overflow-y-auto p-1">
             {loading ? (
-              <div className="p-3 text-center text-xs text-gray-500">Searching mock service...</div>
+              <div className="p-3 text-center text-xs text-gray-500" role="status">
+                Searching mock service...
+              </div>
+            ) : searchError ? (
+              <div className="p-3 text-center text-xs text-red-600" role="alert">
+                Unable to load options. Please try searching again.
+              </div>
             ) : options.length === 0 ? (
               <div className="p-3 text-center text-xs text-gray-400">No matching results found</div>
             ) : (
@@ -371,11 +382,11 @@ function PartyFields({
 }: {
   formCtx: BillFormContext
   ownerName:
-  | 'exporterId'
-  | 'consigneeId'
-  | `invoices.${number}.buyerId`
-  | `invoices.${number}.thirdPartyId`
-  | `invoices.${number}.items.${number}.itemThirdPartyId`
+    | 'exporterId'
+    | 'consigneeId'
+    | `invoices.${number}.buyerId`
+    | `invoices.${number}.thirdPartyId`
+    | `invoices.${number}.items.${number}.itemThirdPartyId`
   branchName: BranchPath
   label: string
   kind: 'exporter' | 'business'
@@ -480,11 +491,14 @@ function PartyFields({
                 sublabel: branch.address1
               }))
             }
-          }}
+          }          
+        }
           getInitialLabel={async (id) => {
-            const branch = owner?.branches.find((b) => String(b.id) === id)
-            return branch ? `${branch.branchName} · ${branch.city}` : ''
-          }}
+  const branch = owner?.branches.find((b) => String(b.id) === id)
+  return await Promise.resolve(
+    branch ? `${branch.branchName} · ${branch.city}` : ''
+  )
+}}
         />
       </div>
     </div>
@@ -846,11 +860,12 @@ function InvoiceEditor({
                   <div className="mb-3 flex flex-wrap items-end gap-4">
                     {(() => {
                       const selectedScheme = schemeCodes.find((s) => s.value === item.schemeCode)
-                      const showDrawback =
-                        selectedScheme &&
-                        (selectedScheme.drawback === true ||
-                          selectedScheme.RODTEP === true ||
-                          selectedScheme.ROSCTL === true)
+                      
+const showDrawback =
+  selectedScheme &&
+  (selectedScheme.drawback ||
+    selectedScheme.RODTEP ||
+    selectedScheme.ROSCTL)
                       return showDrawback ? (
                         <>
                           <div className="w-36">
@@ -908,7 +923,7 @@ function InvoiceEditor({
                         label="Unit of rate"
                         {...register(`invoices.${index}.items.${itemIndex}.unitOfRate`)}
                         options={quantityCodes}
-                        placeholder={invoice.items[index].unitOfMeasurement}
+                        placeholder={item.unitOfMeasurement || 'PCS'}
                       />
                       <Input
                         label="Per Unit (Rate)"
@@ -999,26 +1014,25 @@ function DocumentItem({ formCtx, index, onRemove }: { formCtx: BillFormContext; 
   const { register, watch } = formCtx.hooks
   const documentValues = watch(`documents.${index}`)
 
-  const hasCustomValues = Boolean(
-    documentValues?.placeOfIssue ||
-    documentValues?.invoiceSerialNumber ||
-    documentValues?.itemSerialNumber ||
-    documentValues?.issuingPartyCode ||
-    documentValues?.issuingPartyName ||
-    documentValues?.issuingPartyAddress1 ||
-    documentValues?.issuingPartyAddress2 ||
-    documentValues?.issuingPartyCity ||
-    documentValues?.issuingPartyPin ||
-    documentValues?.beneficiaryPartyCode ||
-    documentValues?.beneficiaryPartyName ||
-    documentValues?.beneficiaryPartyAddress1 ||
-    documentValues?.beneficiaryPartyAddress2 ||
-    documentValues?.beneficiaryPartyCity ||
-    documentValues?.beneficiaryPartyPin ||
-    documentValues?.fileType ||
-    documentValues?.icegateId
+      const hasCustomValues = Boolean(
+    documentValues.placeOfIssue ??
+      documentValues.invoiceSerialNumber ??
+      documentValues.itemSerialNumber ??
+      documentValues.issuingPartyCode ??
+      documentValues.issuingPartyName ??
+      documentValues.issuingPartyAddress1 ??
+      documentValues.issuingPartyAddress2 ??
+      documentValues.issuingPartyCity ??
+      documentValues.issuingPartyPin ??
+      documentValues.beneficiaryPartyCode ??
+      documentValues.beneficiaryPartyName ??
+      documentValues.beneficiaryPartyAddress1 ??
+      documentValues.beneficiaryPartyAddress2 ??
+      documentValues.beneficiaryPartyCity ??
+      documentValues.beneficiaryPartyPin ??
+      documentValues.fileType ??
+      documentValues.icegateId
   )
-
   const [showCustomDetails, setShowCustomDetails] = useState(hasCustomValues)
 
   return (
@@ -1030,31 +1044,50 @@ function DocumentItem({ formCtx, index, onRemove }: { formCtx: BillFormContext; 
         </Button>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        
         <div>
-          <span className="mb-1 block text-sm font-medium text-gray-700">Document type code</span>
+          <span className="mb-1 block text-sm font-medium text-gray-700">
+            Document type code
+          </span>
           <AsyncPartySelect
             name={`documents.${index}.documentTypeCode`}
             placeholder="Search document type..."
             fetchOptions={async (query) => {
               const q = query.toLowerCase().trim()
               const filtered = documentCodes.filter(
-                (doc) => doc.label.toLowerCase().includes(q) || doc.value.toLowerCase().includes(q)
+                (doc) =>
+                  doc.label.toLowerCase().includes(q) ||
+                  doc.value.toLowerCase().includes(q)
               )
-              return filtered.map((doc) => ({
-                value: doc.value,
-                label: doc.label
-              }))
+              return await Promise.resolve(
+                filtered.map((doc) => ({
+                  value: doc.value,
+                  label: doc.label
+                }))
+              )
             }}
+            
             getInitialLabel={async (val) => {
-              const found = documentCodes.find((doc) => doc.value === val || doc.label === val)
-              return found ? found.label : val
+              const found = documentCodes.find(
+                (doc) => doc.value === val || doc.label === val
+              )
+              return await Promise.resolve(found ? found.label : val)
             }}
           />
         </div>
-        <Input label="Image reference number" {...register(`documents.${index}.imageReferenceNumber`)} />
-        <Input label="Issue date" type={dateType} {...register(`documents.${index}.documentIssueDate`)} />
+        <Input
+          label="Image reference number"
+          {...register(`documents.${index}.imageReferenceNumber`)}
+        />
+        <Input
+          label="Issue date"
+          type={dateType}
+          {...register(`documents.${index}.documentIssueDate`)}
+        />
       </div>
+
       <Advanced
+
         title="Issuing party and ICEGATE details"
         open={showCustomDetails}
         onToggle={(isOpen) => setShowCustomDetails(isOpen)}>
@@ -1069,17 +1102,25 @@ function DocumentItem({ formCtx, index, onRemove }: { formCtx: BillFormContext; 
               name={`documents.${index}.fileType`}
               placeholder="Search file type..."
               className="bg-transparent"
-              fetchOptions={async (query) => {
+             
+              fetchOptions={(query) => {
                 const q = query.toLowerCase().trim()
                 const options = [{ value: 'pdf', label: 'PDF' }]
-                return options.filter(
-                  (doc) => doc.label.toLowerCase().includes(q) || doc.value.toLowerCase().includes(q)
+                return Promise.resolve(
+                  options.filter(
+                    (doc) =>
+                      doc.label.toLowerCase().includes(q) ||
+                      doc.value.toLowerCase().includes(q)
+                  )
                 )
               }}
-              getInitialLabel={async (val) => {
-                const found = [{ value: 'pdf', label: 'PDF' }].find((doc) => doc.value === val || doc.label === val)
-                return found ? found.label : val
+              getInitialLabel={(val) => {
+                const found = [{ value: 'pdf', label: 'PDF' }].find(
+                  (doc) => doc.value === val || doc.label === val
+                )
+                return Promise.resolve(found ? found.label : val)
               }}
+
             />
           </div>
           <Input label="Place of issue" {...register(`documents.${index}.placeOfIssue`)} />
@@ -1220,15 +1261,22 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
       setDraftId(saved.id)
       console.log('Shipping bill save payload', saved.payload)
 
-      // Submit payload to backend API (POST /api/shipping-bills from shipping_bill.http)
+      // The local draft is saved first, so the user does not lose work if the API is offline.
+      // Report API sync status honestly instead of showing success when the server request fails.
+      let apiSynced = false
       try {
         const apiResult = await shippingBillService.upsert(data)
+        apiSynced = true
         console.log('API response from POST /api/shipping-bills:', apiResult)
       } catch (apiErr) {
-        console.log('Backend API sync notice (saved locally):', apiErr)
+        console.error('Shipping bill was saved locally, but backend sync failed:', apiErr)
       }
 
-      toast.success(bill ? 'Shipping bill updated' : 'Shipping bill created')
+      if (apiSynced) {
+        toast.success(bill ? 'Shipping bill updated' : 'Shipping bill created')
+      } else {
+        toast.error('Saved locally, but server sync failed. Please try syncing again.')
+      }
       navigate(routes.toShippingBillEdit(saved.id))
     } catch (err: any) {
       console.error('Error saving shipping bill:', err)
@@ -1260,10 +1308,7 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
       setValue(`invoices.${quickAdd.invoiceIndex}.${field}BranchId`, String(branchId), { shouldValidate: true })
     }
   }
-
-  const exporter = exporters.find((item) => String(item.id) === values.exporterId)
-  const consignee = businesses.find((item) => String(item.id) === values.consigneeId)
-  const totalLines = values.invoices.reduce((sum, invoice) => sum + invoice.items.length, 0)
+  // Removed unused variables: exporter, consignee, totalLines
 
   return (
     <div className="space-y-5">
@@ -1286,12 +1331,13 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
           return (
             <div
               key={step.id}
-              className={`rounded-lg border p-3 ${isShippingBill
-                ? 'border-primary-300 bg-primary-50'
-                : 'border-gray-200 bg-gray-50'
-                }`}>
+              className={`rounded-lg border p-3 ${
+                isShippingBill ? 'border-primary-300 bg-primary-50' : 'border-gray-200 bg-gray-50'
+              }`}>
               <div className="flex items-center gap-2 text-sm font-medium">
-                <span className="flex size-6 items-center justify-center rounded-full bg-white text-xs">{index + 1}</span>
+                <span className="flex size-6 items-center justify-center rounded-full bg-white text-xs">
+                  {index + 1}
+                </span>
                 {step.title}
               </div>
               <p className="ml-8 text-xs text-gray-500">{step.description}</p>
@@ -1717,9 +1763,7 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
                 Save & Next
               </Button>
             ) : (
-              <Button type="submit">
-                Save changes
-              </Button>
+              <Button type="submit">Save changes</Button>
             )}
           </div>
         </div>
@@ -1749,7 +1793,9 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
 export default function ShippingBillPage() {
   const { id } = useParams<{ id?: string }>()
   const { bills } = useDemoData()
-  const bill = id ? (bills.find((item) => item.id === Number(id)) || shippingBillService.getById(id)) : undefined
+  const bill = id
+  ? bills.find((item) => item.id === Number(id)) ?? shippingBillService.getById(id)
+  : undefined
   if (id && !bill)
     return (
       <div className="space-y-3">
